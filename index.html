@@ -1,0 +1,664 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Hand Magic — gesture drawing in the browser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; color: #fff; }
+
+  #video, #canvas, #draw, #overlay {
+    position: fixed; inset: 0; width: 100vw; height: 100vh;
+    transform: scaleX(-1); /* everything mirrored together */
+  }
+  #video    { object-fit: cover; z-index: 0; }
+  #canvas   { z-index: 1; pointer-events: none; }
+  #draw     { z-index: 2; pointer-events: none; }
+  #overlay  { z-index: 3; pointer-events: none; }
+
+  .panel { position: fixed; z-index: 5; padding: 14px 18px;
+    background: rgba(10,10,15,0.55); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-radius: 14px; border: 1px solid rgba(255,255,255,0.08); }
+  #hud { left: 20px; top: 20px; font-size: 13px; line-height: 1.6; min-width: 220px; }
+  #hud h1 { margin: 0 0 8px; font-size: 14px; font-weight: 600; opacity: 0.9; letter-spacing: 0.5px; }
+  #hud .row { display: flex; justify-content: space-between; gap: 16px; }
+  #hud .label { opacity: 0.55; }
+  #hud .val { font-variant-numeric: tabular-nums; font-weight: 500; }
+  #hud .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 50%;
+    vertical-align: -2px; box-shadow: 0 0 8px currentColor; }
+
+  #help { left: 20px; bottom: 20px; font-size: 12px; line-height: 1.85; max-width: 320px; }
+  #help b { color: #fff; font-weight: 600; }
+  #help span { opacity: 0.65; }
+
+  #toolbar { right: 20px; top: 20px; display: flex; gap: 10px; z-index: 5;
+    position: fixed; }
+  #toolbar button { padding: 10px 16px; font-size: 13px; font-weight: 500;
+    background: rgba(10,10,15,0.55); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    color: #fff; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px;
+    cursor: pointer; font-family: inherit; transition: background 0.15s; }
+  #toolbar button:hover { background: rgba(30,30,40,0.7); }
+
+  #palette { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+    display: flex; gap: 8px; padding: 10px 14px; z-index: 5;
+    background: rgba(10,10,15,0.55); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); }
+  .swatch { width: 30px; height: 30px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.18); cursor: pointer; padding: 0;
+    transition: transform 0.15s ease, border-color 0.15s; }
+  .swatch:hover { transform: scale(1.15); }
+  .swatch.active { border-color: #fff; transform: scale(1.2);
+    box-shadow: 0 0 14px rgba(255,255,255,0.35); }
+
+  #status { left: 50%; top: 50%; transform: translate(-50%,-50%); z-index: 6;
+    padding: 22px 30px; font-size: 14px; text-align: center; max-width: 420px;
+    background: rgba(10,10,15,0.7); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-radius: 14px; border: 1px solid rgba(255,255,255,0.1); }
+  #status .sub { display: block; margin-top: 8px; opacity: 0.55; font-size: 12px; }
+</style>
+</head>
+<body>
+  <video id="video" autoplay muted playsinline></video>
+  <canvas id="canvas"></canvas>
+  <canvas id="draw"></canvas>
+  <canvas id="overlay"></canvas>
+
+  <div id="hud" class="panel">
+    <h1>✦ Hand Magic</h1>
+    <div class="row"><span class="label">Mode</span><span class="val" id="t-mode">—</span></div>
+    <div class="row"><span class="label">Strokes</span><span class="val" id="t-strokes">0</span></div>
+    <div class="row"><span class="label">Color</span><span class="val"><span class="swatch" id="t-swatch"></span></span></div>
+    <div class="row"><span class="label">FPS</span><span class="val" id="t-fps">—</span></div>
+  </div>
+
+  <div id="help" class="panel">
+    <b>👆 index up</b> <span>→ draw with fingertip</span><br>
+    <b>👌 pinch</b> <span>→ grab + drag (move closer/farther = zoom)</span><br>
+    <b>✋ open palm</b> <span>→ erase strokes under your hand</span><br>
+    <b>✊ fist / no hand</b> <span>→ pause</span>
+  </div>
+
+  <div id="palette">
+    <button class="swatch active" data-color="#ffffff" style="background:#ffffff" title="white"></button>
+    <button class="swatch" data-color="#ff4757" style="background:#ff4757" title="red"></button>
+    <button class="swatch" data-color="#ff8c1a" style="background:#ff8c1a" title="orange"></button>
+    <button class="swatch" data-color="#ffd93d" style="background:#ffd93d" title="yellow"></button>
+    <button class="swatch" data-color="#6bcf7f" style="background:#6bcf7f" title="green"></button>
+    <button class="swatch" data-color="#4ddbff" style="background:#4ddbff" title="cyan"></button>
+    <button class="swatch" data-color="#5b8def" style="background:#5b8def" title="blue"></button>
+    <button class="swatch" data-color="#b566ff" style="background:#b566ff" title="purple"></button>
+    <button class="swatch" data-color="#ff66cc" style="background:#ff66cc" title="pink"></button>
+    <button class="swatch" data-color="#1a1a1a" style="background:#1a1a1a" title="black"></button>
+  </div>
+
+  <div id="toolbar">
+    <button id="clear">Clear all</button>
+    <button id="undo">Undo</button>
+  </div>
+
+  <div id="status">⏳ initializing<span class="sub">grant camera permission when asked</span></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { HandLandmarker, FilesetResolver }
+      from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/vision_bundle.mjs";
+
+    // =========================================================================
+    // DOM
+    // =========================================================================
+    const video    = document.getElementById('video');
+    const canvas3D = document.getElementById('canvas');
+    const drawCv   = document.getElementById('draw');
+    const overlay  = document.getElementById('overlay');
+    const status   = document.getElementById('status');
+    const drawCtx  = drawCv.getContext('2d');
+    const overCtx  = overlay.getContext('2d');
+
+    const elMode    = document.getElementById('t-mode');
+    const elStrokes = document.getElementById('t-strokes');
+    const elSwatch  = document.getElementById('t-swatch');
+    const elFps     = document.getElementById('t-fps');
+
+    document.getElementById('clear').onclick = () => { strokes.length = 0; activeStroke = null; draggedStroke = null; };
+    document.getElementById('undo').onclick  = () => { strokes.pop(); activeStroke = null; draggedStroke = null; };
+
+    // color palette
+    document.querySelectorAll('.swatch').forEach(btn => {
+      btn.onclick = () => {
+        document.querySelectorAll('.swatch').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        PEN_COLOR = btn.dataset.color;
+      };
+    });
+
+    // =========================================================================
+    // THREE.JS — particle pool for sparkle trail
+    // =========================================================================
+    const POOL = 800;
+    const pPos = new Float32Array(POOL * 3);
+    const pCol = new Float32Array(POOL * 3);
+    const pSeed = new Float32Array(POOL);
+    const pVel  = new Float32Array(POOL * 3);
+    const pLife = new Float32Array(POOL); // 0..1, fades out
+    let nextSlot = 0;
+    for (let i = 0; i < POOL; i++) { pSeed[i] = Math.random(); pLife[i] = 0; }
+
+    const renderer = new THREE.WebGLRenderer({ canvas: canvas3D, antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x000000, 0);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 100);
+    camera.position.set(0, 0, 5);
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+    geom.setAttribute('color',    new THREE.BufferAttribute(pCol, 3));
+    geom.setAttribute('aSeed',    new THREE.BufferAttribute(pSeed, 1));
+    geom.setAttribute('aLife',    new THREE.BufferAttribute(pLife, 1));
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { uSize: { value: 2.8 }, uTime: { value: 0 } },
+      vertexShader: `
+        attribute vec3 color;
+        attribute float aSeed;
+        attribute float aLife;
+        varying vec3 vColor;
+        varying float vAlpha;
+        uniform float uSize;
+        uniform float uTime;
+        void main() {
+          vColor = color;
+          float twinkle = 0.75 + 0.25 * sin(uTime * 6.0 + aSeed * 21.7);
+          vAlpha = aLife * twinkle;
+          float sizeMul = 0.6 + aSeed * 0.5;
+          // particles shrink as they fade (life 1 → big, life 0 → tiny)
+          float scl = mix(0.2, 1.0, aLife);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = uSize * sizeMul * scl * (300.0 / -mv.z);
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        varying vec3 vColor;
+        varying float vAlpha;
+        void main() {
+          // tiny solid dot — no halo, no spikes
+          vec2 uv = gl_PointCoord - vec2(0.5);
+          float d = length(uv);
+          if (d > 0.5) discard;
+          float a = pow(1.0 - d * 2.0, 2.0) * vAlpha;
+          gl_FragColor = vec4(vColor, a);
+        }`,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.NormalBlending, // no additive stacking → no white glow
+    });
+
+    const points = new THREE.Points(geom, mat);
+    scene.add(points);
+
+    // =========================================================================
+    // GEOMETRY HELPERS — coord mapping
+    // =========================================================================
+    // videoLayout: where the video appears on screen with object-fit: cover.
+    // Used to draw landmarks/strokes aligned to what the user sees.
+    let videoLayout = { rW: 0, rH: 0, oX: 0, oY: 0 };
+    function updateLayout() {
+      const dpr = Math.min(window.devicePixelRatio, 2);
+      const sw = window.innerWidth, sh = window.innerHeight;
+      // overlay (landmarks)
+      overlay.width  = sw * dpr;  overlay.height = sh * dpr;
+      overlay.style.width = sw + 'px'; overlay.style.height = sh + 'px';
+      overCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // draw layer (strokes)
+      drawCv.width   = sw * dpr;  drawCv.height  = sh * dpr;
+      drawCv.style.width = sw + 'px'; drawCv.style.height = sh + 'px';
+      drawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (video.videoWidth > 0) {
+        const va = video.videoWidth / video.videoHeight;
+        const sa = sw / sh;
+        let rW, rH, oX, oY;
+        if (va > sa) { rH = sh; rW = sh * va; oX = (sw - rW) / 2; oY = 0; }
+        else         { rW = sw; rH = sw / va; oX = 0; oY = (sh - rH) / 2; }
+        videoLayout = { rW, rH, oX, oY };
+      }
+    }
+
+    // map normalized [0..1] landmark coords to world coords on z=0 plane
+    function lmToWorld(lmx, lmy) {
+      const fov = camera.fov * Math.PI / 180;
+      const cz  = camera.position.z;
+      const viewH = 2 * Math.tan(fov/2) * cz;
+      const viewW = viewH * (window.innerWidth / window.innerHeight);
+      return {
+        x: (lmx - 0.5) * viewW,
+        y: -(lmy - 0.5) * viewH,
+      };
+    }
+
+    // =========================================================================
+    // CAMERA + HAND TRACKING
+    // =========================================================================
+    let handLandmarker = null;
+    let lastVideoTime = -1;
+    let detectedHands = [];
+
+    async function initCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'user' }, audio: false
+      });
+      video.srcObject = stream;
+      await new Promise(r => video.onloadedmetadata = r);
+      await video.play();
+      updateLayout();
+    }
+
+    async function initHands() {
+      const fs = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm"
+      );
+      handLandmarker = await HandLandmarker.createFromOptions(fs, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        numHands: 1
+      });
+    }
+
+    // =========================================================================
+    // GESTURE DETECTION
+    // =========================================================================
+    function detectGesture(lm) {
+      const indexExt  = lm[8].y  < lm[6].y  - 0.025;
+      const middleExt = lm[12].y < lm[10].y - 0.025;
+      const ringExt   = lm[16].y < lm[14].y - 0.025;
+      const pinkyExt  = lm[20].y < lm[18].y - 0.025;
+      const pinch = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+
+      // pinch wins: thumb tip touches index tip, other fingers can be anywhere
+      if (pinch < 0.05) return { mode: 'pinch', tip: { x: (lm[4].x + lm[8].x)/2, y: (lm[4].y + lm[8].y)/2 } };
+      // pure pointer: only index extended
+      if (indexExt && !middleExt && !ringExt && !pinkyExt) return { mode: 'draw', tip: { x: lm[8].x, y: lm[8].y } };
+      // open palm: 3+ fingers extended → eraser
+      const open = (indexExt?1:0) + (middleExt?1:0) + (ringExt?1:0) + (pinkyExt?1:0);
+      if (open >= 3) return { mode: 'erase', tip: { x: lm[9].x, y: lm[9].y } };
+      // anything else = idle
+      return { mode: 'idle', tip: { x: lm[9].x, y: lm[9].y } };
+    }
+
+    // =========================================================================
+    // STROKES
+    // =========================================================================
+    // each stroke = { points: [{x,y}], offsetX, offsetY, color, width, glow }
+    const strokes = [];
+    let activeStroke = null;
+    let draggedStroke = null;
+    let dragGrabPoint = { x: 0, y: 0 }; // pinch position when grab started
+    let dragInitialPalm = 0;            // palm width at grab time (for zoom)
+    let smHue = 320;
+    const MIN_STEP = 0.004; // min distance in normalized coords between consecutive stroke points
+
+    let PEN_COLOR = '#ffffff';
+    function currentColor() { return PEN_COLOR; }
+
+    function startStroke(tip) {
+      activeStroke = {
+        points: [{ x: tip.x, y: tip.y }],
+        offsetX: 0, offsetY: 0,
+        scale: 1, pivotX: 0, pivotY: 0,
+        color: currentColor(),
+        width: 8,
+      };
+      strokes.push(activeStroke);
+    }
+
+    // collapse a stroke's current transform (scale around pivot + offset) back
+    // into its raw points, so subsequent grabs start from a clean state.
+    function bakeStroke(s) {
+      const sc = s.scale, px = s.pivotX, py = s.pivotY, ox = s.offsetX, oy = s.offsetY;
+      for (const p of s.points) {
+        p.x = (p.x - px) * sc + px + ox;
+        p.y = (p.y - py) * sc + py + oy;
+      }
+      s.width *= sc;
+      s.offsetX = 0; s.offsetY = 0; s.scale = 1; s.pivotX = 0; s.pivotY = 0;
+    }
+
+    // proxy for "distance of hand from camera": palm width on the image plane
+    function palmWidth(lm) {
+      return Math.hypot(lm[5].x - lm[17].x, lm[5].y - lm[17].y);
+    }
+
+    function extendStroke(tip) {
+      if (!activeStroke) return;
+      const last = activeStroke.points[activeStroke.points.length - 1];
+      const d = Math.hypot(tip.x - last.x, tip.y - last.y);
+      if (d > MIN_STEP) activeStroke.points.push({ x: tip.x, y: tip.y });
+    }
+
+    function closeStroke() { activeStroke = null; }
+
+    // distance from a point (in absolute coords with offset applied) to nearest point on a stroke
+    function nearestStroke(px, py, threshold) {
+      let best = null, bestD = threshold;
+      for (const s of strokes) {
+        for (const p of s.points) {
+          const ax = p.x + s.offsetX, ay = p.y + s.offsetY;
+          const d = Math.hypot(ax - px, ay - py);
+          if (d < bestD) { bestD = d; best = s; }
+        }
+      }
+      return best;
+    }
+
+    // Paint-style eraser: walk every stroke point-by-point, drop points that
+    // fall inside the eraser circle, and split the surviving runs into
+    // independent strokes (so a line erased in the middle becomes two pieces).
+    function eraseAt(cx, cy, radius) {
+      const out = [];
+      for (const s of strokes) {
+        // never erase a stroke that is currently being authored or dragged
+        if (s === activeStroke || s === draggedStroke) { out.push(s); continue; }
+        const segments = [];
+        let seg = null;
+        for (const p of s.points) {
+          // transformed position (what the user actually sees)
+          const tx = (p.x - s.pivotX) * s.scale + s.pivotX + s.offsetX;
+          const ty = (p.y - s.pivotY) * s.scale + s.pivotY + s.offsetY;
+          const inside = Math.hypot(tx - cx, ty - cy) < radius;
+          if (inside) {
+            if (seg && seg.length >= 2) segments.push(seg);
+            seg = null;
+          } else {
+            if (!seg) seg = [];
+            seg.push(p);
+          }
+        }
+        if (seg && seg.length >= 2) segments.push(seg);
+        if (segments.length === 0) continue; // entire stroke erased
+        // each surviving run keeps the original transform
+        for (const points of segments) {
+          out.push({
+            points,
+            offsetX: s.offsetX, offsetY: s.offsetY,
+            scale: s.scale, pivotX: s.pivotX, pivotY: s.pivotY,
+            color: s.color, width: s.width,
+          });
+        }
+      }
+      strokes.length = 0;
+      strokes.push(...out);
+    }
+
+    function renderStrokes() {
+      drawCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      const { rW, rH, oX, oY } = videoLayout;
+      drawCtx.lineCap = 'round';
+      drawCtx.lineJoin = 'round';
+      for (const s of strokes) {
+        if (s.points.length === 0) continue;
+        drawCtx.strokeStyle = s.color;
+        drawCtx.shadowBlur = 0;
+        drawCtx.lineWidth = s.width * s.scale;
+        drawCtx.globalAlpha = 1;
+        drawCtx.beginPath();
+        for (let i = 0; i < s.points.length; i++) {
+          const p = s.points[i];
+          // scale around pivot, then translate by offset
+          const rx = (p.x - s.pivotX) * s.scale + s.pivotX;
+          const ry = (p.y - s.pivotY) * s.scale + s.pivotY;
+          const px = (rx + s.offsetX) * rW + oX;
+          const py = (ry + s.offsetY) * rH + oY;
+          if (i === 0) drawCtx.moveTo(px, py); else drawCtx.lineTo(px, py);
+        }
+        drawCtx.stroke();
+
+        // highlight grabbed stroke with a subtle outline
+        if (s === draggedStroke) {
+          drawCtx.strokeStyle = 'rgba(255,255,255,0.9)';
+          drawCtx.lineWidth = 1;
+          drawCtx.setLineDash([4, 4]);
+          drawCtx.stroke();
+          drawCtx.setLineDash([]);
+        }
+      }
+    }
+
+    // =========================================================================
+    // PARTICLES — sparkle trail at the active fingertip
+    // =========================================================================
+    const tmpColor = new THREE.Color();
+    const baseColor = new THREE.Color();
+    function spawnSparkles(lmx, lmy, count) {
+      const w = lmToWorld(lmx, lmy);
+      baseColor.set(PEN_COLOR);
+      for (let n = 0; n < count; n++) {
+        const i = nextSlot;
+        nextSlot = (nextSlot + 1) % POOL;
+        // tiny jitter around fingertip
+        pPos[i*3]   = w.x + (Math.random() - 0.5) * 0.03;
+        pPos[i*3+1] = w.y + (Math.random() - 0.5) * 0.03;
+        pPos[i*3+2] = (Math.random() - 0.5) * 0.03;
+        // gentle outward drift
+        const ang = Math.random() * Math.PI * 2;
+        const sp  = 0.15 + Math.random() * 0.5;
+        pVel[i*3]   = Math.cos(ang) * sp;
+        pVel[i*3+1] = Math.sin(ang) * sp + 0.15;
+        pVel[i*3+2] = (Math.random() - 0.5) * sp * 0.4;
+        // color = pen color with small lightness variance
+        const v = (Math.random() - 0.5) * 0.18;
+        tmpColor.setRGB(
+          Math.max(0, Math.min(1, baseColor.r + v)),
+          Math.max(0, Math.min(1, baseColor.g + v)),
+          Math.max(0, Math.min(1, baseColor.b + v))
+        );
+        pCol[i*3] = tmpColor.r; pCol[i*3+1] = tmpColor.g; pCol[i*3+2] = tmpColor.b;
+        pLife[i] = 1.0;
+      }
+    }
+
+    function updateParticles(dt) {
+      const drag = Math.pow(0.04, dt); // exponential drag
+      for (let i = 0; i < POOL; i++) {
+        if (pLife[i] <= 0) continue;
+        pPos[i*3]   += pVel[i*3]   * dt;
+        pPos[i*3+1] += pVel[i*3+1] * dt;
+        pPos[i*3+2] += pVel[i*3+2] * dt;
+        pVel[i*3]   *= drag;
+        pVel[i*3+1] *= drag;
+        pVel[i*3+2] *= drag;
+        pLife[i] = Math.max(0, pLife[i] - dt * 1.4);
+      }
+      geom.attributes.position.needsUpdate = true;
+      geom.attributes.color.needsUpdate    = true;
+      geom.attributes.aLife.needsUpdate    = true;
+    }
+
+    // =========================================================================
+    // LANDMARK OVERLAY (subtle, just to confirm tracking)
+    // =========================================================================
+    const CONNECTIONS = [
+      [0,1],[1,2],[2,3],[3,4],
+      [0,5],[5,6],[6,7],[7,8],
+      [5,9],[9,10],[10,11],[11,12],
+      [9,13],[13,14],[14,15],[15,16],
+      [13,17],[0,17],[17,18],[18,19],[19,20]
+    ];
+    function drawHand(lm, modeColor) {
+      overCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      const { rW, rH, oX, oY } = videoLayout;
+      overCtx.lineWidth = 2;
+      overCtx.strokeStyle = modeColor + 'cc';
+      overCtx.beginPath();
+      for (const [a, b] of CONNECTIONS) {
+        overCtx.moveTo(lm[a].x * rW + oX, lm[a].y * rH + oY);
+        overCtx.lineTo(lm[b].x * rW + oX, lm[b].y * rH + oY);
+      }
+      overCtx.stroke();
+      overCtx.fillStyle = modeColor;
+      for (const p of lm) {
+        overCtx.beginPath();
+        overCtx.arc(p.x * rW + oX, p.y * rH + oY, 3, 0, Math.PI*2);
+        overCtx.fill();
+      }
+    }
+
+    // =========================================================================
+    // MAIN LOOP
+    // =========================================================================
+    let lastT = performance.now();
+    let frames = 0, fpsT0 = lastT;
+
+    function loop(t) {
+      requestAnimationFrame(loop);
+      const dt = Math.min(0.05, (t - lastT) / 1000);
+      lastT = t;
+
+      // 1. detect hand on each new video frame
+      if (handLandmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        const res = handLandmarker.detectForVideo(video, performance.now());
+        detectedHands = res.landmarks || [];
+      }
+
+      let mode = 'idle';
+      let tip = null;
+
+      if (detectedHands.length > 0) {
+        const lm = detectedHands[0];
+        const g = detectGesture(lm);
+        mode = g.mode; tip = g.tip;
+
+        // hue from horizontal hand position (palm center)
+        const targetHue = (1 - lm[9].x) * 360;
+        let dH = targetHue - smHue;
+        if (dH >  180) dH -= 360;
+        if (dH < -180) dH += 360;
+        smHue += dH * 0.08;
+
+        const modeColor = mode === 'draw'  ? '#4dffb1'
+                        : mode === 'pinch' ? '#ffd14d'
+                        : mode === 'erase' ? '#ff6b6b'
+                        :                    '#ff7ac8';
+        drawHand(lm, modeColor);
+        if (mode === 'erase') {
+          // dashed circle visualizing erase radius under the palm
+          const { rW, rH, oX, oY } = videoLayout;
+          const cx = lm[9].x * rW + oX, cy = lm[9].y * rH + oY;
+          const r  = palmWidth(lm) * 1.1 * rW;
+          overCtx.strokeStyle = 'rgba(255,107,107,0.85)';
+          overCtx.fillStyle   = 'rgba(255,107,107,0.10)';
+          overCtx.lineWidth = 2;
+          overCtx.setLineDash([8, 5]);
+          overCtx.beginPath(); overCtx.arc(cx, cy, r, 0, Math.PI*2);
+          overCtx.fill(); overCtx.stroke();
+          overCtx.setLineDash([]);
+        }
+      } else {
+        overCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      }
+
+      // 2. state machine: draw / pinch / idle
+      if (mode === 'draw' && tip) {
+        if (!activeStroke) startStroke(tip);
+        else extendStroke(tip);
+        // tiny sparks trailing the fingertip
+        if (Math.random() < 0.35) spawnSparkles(tip.x, tip.y, 1);
+      } else if (activeStroke) {
+        closeStroke();
+      }
+
+      if (mode === 'erase' && tip && detectedHands.length > 0) {
+        const lm = detectedHands[0];
+        const r = palmWidth(lm) * 1.1; // erase radius in normalized coords
+        eraseAt(tip.x, tip.y, r);
+      }
+
+      if (mode === 'pinch' && tip) {
+        if (!draggedStroke) {
+          // try grab — find nearest stroke within threshold
+          const found = nearestStroke(tip.x, tip.y, 0.07);
+          if (found) {
+            // bake any prior transform → fresh slate for this grab
+            bakeStroke(found);
+            draggedStroke = found;
+            dragGrabPoint = { x: tip.x, y: tip.y };
+            // pivot in the stroke's own coords = the grab point itself
+            found.pivotX = tip.x;
+            found.pivotY = tip.y;
+            dragInitialPalm = palmWidth(detectedHands[0]);
+          }
+        } else if (detectedHands.length > 0) {
+          // translation: how far the pinch moved since grab
+          draggedStroke.offsetX = tip.x - dragGrabPoint.x;
+          draggedStroke.offsetY = tip.y - dragGrabPoint.y;
+          // zoom: ratio of current palm width to initial (proxy for hand→camera distance)
+          const pwNow = palmWidth(detectedHands[0]);
+          const ratio = pwNow / Math.max(dragInitialPalm, 0.001);
+          draggedStroke.scale = Math.max(0.2, Math.min(6, ratio));
+        }
+      } else if (draggedStroke) {
+        // release — collapse transform into raw points
+        bakeStroke(draggedStroke);
+        draggedStroke = null;
+      }
+
+      // 3. update particles & render
+      updateParticles(dt);
+      mat.uniforms.uTime.value = t * 0.001;
+      renderer.render(scene, camera);
+
+      // 4. render strokes (do every frame so dragged stroke updates)
+      renderStrokes();
+
+      // 5. HUD
+      elMode.textContent = mode;
+      elStrokes.textContent = strokes.length;
+      const col = currentColor();
+      elSwatch.style.backgroundColor = col;
+      elSwatch.style.color = col;
+      frames++;
+      if (t - fpsT0 > 500) {
+        elFps.textContent = Math.round(frames * 1000 / (t - fpsT0));
+        frames = 0; fpsT0 = t;
+      }
+    }
+
+    // =========================================================================
+    // BOOT
+    // =========================================================================
+    (async () => {
+      try {
+        status.firstChild.nodeValue = '⏳ asking for camera…';
+        await initCamera();
+        status.firstChild.nodeValue = '⏳ loading hand model…';
+        await initHands();
+        status.style.display = 'none';
+        requestAnimationFrame(loop);
+      } catch (e) {
+        status.innerHTML = '❌ ' + (e.message || e) +
+          '<span class="sub">make sure the page is served from <b>http://localhost</b> and camera access is allowed</span>';
+      }
+    })();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      updateLayout();
+    });
+  </script>
+</body>
+</html>
