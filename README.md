@@ -201,5 +201,3 @@ Knob'ы в верху `<script>`:
 - [ ] Catmull-Rom сглаживание между точками штриха
 
 ---
-
-Made with [Claude Code](https://claude.ai/code) — single-session vibe-coding experiment.
